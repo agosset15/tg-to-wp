@@ -3,6 +3,8 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
@@ -14,7 +16,7 @@ from config import (
     WEBHOOK_PATH,
     WEBHOOK_URL,
     WEB_SERVER_HOST,
-    WEB_SERVER_PORT,
+    WEB_SERVER_PORT, PROXY_URL, BOTAPI_URL, BOTAPI_FILE_URL,
 )
 from handlers import router
 
@@ -26,9 +28,21 @@ logger = logging.getLogger(__name__)
 
 
 def _make_bot() -> Bot:
+    session_kwargs: dict = {}
+    if PROXY_URL:
+        session_kwargs["proxy"] = PROXY_URL
+    if BOTAPI_URL:
+        if BOTAPI_FILE_URL:
+            logging.info(f"Using custom Telegram Bot API server: {BOTAPI_URL} (file: {BOTAPI_FILE_URL})")
+            session_kwargs["api"] = TelegramAPIServer(base=BOTAPI_URL, file=BOTAPI_FILE_URL)
+        else:
+            logging.info(f"Using custom Telegram Bot API server: {BOTAPI_URL}")
+            session_kwargs["api"] = TelegramAPIServer.from_base(BOTAPI_URL)
+    session = AiohttpSession(**session_kwargs) if session_kwargs else None
     return Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=session
     )
 
 

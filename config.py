@@ -27,3 +27,9 @@ WEB_SERVER_HOST: str = os.getenv("WEB_SERVER_HOST", "0.0.0.0")
 WEB_SERVER_PORT: int = int(os.getenv("PORT", "8443"))
 
 USE_WEBHOOK: bool = bool(WEBHOOK_HOST)
+
+PROXY_URL = os.getenv("PROXY_URL", None)
+
+BOTAPI_URL = os.getenv("BOTAPI_URL", None)
+BOTAPI_FILE_URL = os.getenv("BOTAPI_FILE_URL", None)
+botapi_extended_limits = BOTAPI_URL is not None and BOTAPI_FILE_URL is not None

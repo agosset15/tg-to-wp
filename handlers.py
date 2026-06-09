@@ -12,6 +12,7 @@ from aiogram.types import (
     Message,
 )
 
+from config import botapi_extended_limits
 from middleware import AccessMiddleware, AlbumMiddleware
 from states import Post
 from utils import post_to_wp
@@ -26,8 +27,9 @@ _MORE_TAG = "<!--more--><br>"
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
-# Bot API отдаёт на скачивание (getFile) файлы не больше 20 МБ
-MAX_TG_FILE = 20 * 1024 * 1024
+# Лимит getFile: 20 МБ на публичном Bot API, 2 ГБ на локальном сервере.
+MAX_TG_FILE = 2 * 1024 * 1024 * 1024 if botapi_extended_limits else 20 * 1024 * 1024
+_LIMIT_LABEL = "2 ГБ" if botapi_extended_limits else "20 МБ"
 
 
 def _kb(*rows: list[InlineKeyboardButton]) -> InlineKeyboardMarkup:
@@ -48,7 +50,7 @@ def _split_title_body(html: str) -> tuple[str, str]:
 
 async def _file_url(bot: Bot, file_id: str) -> str:
     file = await bot.get_file(file_id)
-    return f"https://api.telegram.org/file/bot{bot.token}/{file.file_path}"
+    return bot.session.api.file_url(bot.token, file.file_path)
 
 
 async def _collect_media(
@@ -58,7 +60,7 @@ async def _collect_media(
     album: list[Message] | None,
 ) -> bool:
     """Собирает фото/видео из сообщения или альбома в data['media'].
-    Видео крупнее лимита Bot API (20 МБ на скачивание) пропускает.
+    Видео крупнее лимита Bot API на скачивание пропускает.
     Возвращает False, если сохранять нечего."""
     media: list[dict] = []
     skipped = 0
@@ -85,7 +87,7 @@ async def _collect_media(
 
     if skipped:
         await message.answer(
-            f"Пропущено видео: {skipped} шт. больше 20 МБ — "
+            f"Пропущено видео: {skipped} шт. больше {_LIMIT_LABEL} — "
             "Bot API не отдаёт такие файлы на скачивание."
         )
     if not media:
@@ -277,6 +279,7 @@ async def publish_now(callback: CallbackQuery, state: FSMContext) -> None:
 
     data = await state.get_data()
     await state.clear()
+    await callback.answer()
 
     try:
         result = await post_to_wp(data, publish_now=True)
@@ -284,8 +287,6 @@ async def publish_now(callback: CallbackQuery, state: FSMContext) -> None:
     except Exception as e:
         logger.exception("Ошибка публикации для пользователя %d", callback.from_user.id)
         await callback.message.answer(f"Ошибка публикации: {e}")
-
-    await callback.answer()
 
 
 @router.callback_query(Post.publish, F.data == "pub:schedule")
