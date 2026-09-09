@@ -1,5 +1,3 @@
-LABEL authors="ag15"
-
 FROM ghcr.io/astral-sh/uv:python3.12-alpine AS builder
 
 WORKDIR /app
