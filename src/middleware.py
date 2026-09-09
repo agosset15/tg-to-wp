@@ -2,7 +2,7 @@ import asyncio
 from typing import Any, Callable, Awaitable
 
 from aiogram import BaseMiddleware
-from aiogram.types import Message, TelegramObject
+from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from config import ALLOWED_USERS
 
@@ -19,8 +19,15 @@ class AccessMiddleware(BaseMiddleware):
     ) -> Any:
         user = getattr(event, "from_user", None)
         if user is None or user.id not in ALLOWED_USERS:
-            if isinstance(event, Message):
-                await event.answer("У вас нет доступа к публикации.")
+            denial = (
+                "У вас нет доступа к публикации. "
+                f"Ваш Telegram ID: {user.id if user else '—'} — "
+                "передайте его администратору бота."
+            )
+            if isinstance(event, CallbackQuery):
+                await event.answer(denial, show_alert=True)
+            elif isinstance(event, Message):
+                await event.answer(denial)
             return
         return await handler(event, data)
 

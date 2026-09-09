@@ -10,6 +10,13 @@ logger = logging.getLogger(__name__)
 
 _categories_cache: TTLCache = TTLCache(maxsize=1, ttl=3600)
 
+_HTTP_HINTS: dict[int, str] = {
+    401: "WordPress не принял логин или пароль приложения (WP_USERNAME / WP_PASSWORD).",
+    403: "У пользователя WordPress нет прав на публикацию.",
+    404: "REST API WordPress недоступен по адресу WP_URL.",
+    413: "Файл слишком велик для WordPress — увеличьте upload_max_filesize.",
+}
+
 
 def _auth() -> httpx.BasicAuth:
     return httpx.BasicAuth(WP_USERNAME, WP_PASSWORD)
@@ -210,9 +217,9 @@ def _build_video_block(item: dict) -> str:
     )
 
 
-async def post_to_wp(data: dict, publish_now: bool) -> dict:
+async def post_to_wp(data: dict, publish: bool = True) -> dict:
     """
-    Публикует или планирует пост в WordPress.
+    Публикует пост в WordPress или сохраняет его черновиком.
 
     data['media'] — список {'url','kind','filename','mime'}. Все файлы грузятся
     параллельно: первое изображение становится featured, остальные изображения —
@@ -254,16 +261,10 @@ async def post_to_wp(data: dict, publish_now: bool) -> dict:
         "content": content,
         "categories": [1], # 1 — ID категории "Новости"
         "tags": [],
-        "status": "publish" if publish_now else "future",
+        "status": "publish" if publish else "draft",
     }
     if featured_id is not None:
         post_data["featured_media"] = featured_id
-
-    if not publish_now:
-        sched_date = data.get("schedule_date", "")
-        sched_time = data.get("schedule_time", "")
-        if sched_date and sched_time:
-            post_data["date"] = f"{sched_date}T{sched_time}:00"
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -277,6 +278,8 @@ async def post_to_wp(data: dict, publish_now: bool) -> dict:
         logger.info("Пост создан: %s", result.get("link"))
         return result
 
+    hint = _HTTP_HINTS.get(resp.status_code)
+    logger.error("Ошибка создания поста [%d]: %s", resp.status_code, resp.text[:500])
     raise RuntimeError(
-        f"Ошибка создания поста [{resp.status_code}]: {resp.text[:300]}"
+        hint or f"WordPress ответил {resp.status_code}: {resp.text[:200]}"
     )

@@ -7,6 +7,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
@@ -56,7 +57,16 @@ def _make_dispatcher() -> Dispatcher:
 # Lifecycle hooks
 # ---------------------------------------------------------------------------
 
+BOT_COMMANDS = [
+    BotCommand(command="new", description="Создать пост по шагам"),
+    BotCommand(command="skip", description="Пропустить необязательный шаг"),
+    BotCommand(command="cancel", description="Отменить текущий пост"),
+    BotCommand(command="help", description="Справка"),
+]
+
+
 async def _on_startup(bot: Bot) -> None:
+    await bot.set_my_commands(BOT_COMMANDS)
     if USE_WEBHOOK:
         await bot.set_webhook(WEBHOOK_URL)
         logger.info("Webhook установлен: %s", WEBHOOK_URL)
