@@ -11,7 +11,7 @@ ALLOWED_USERS: frozenset[int] = frozenset(
 
 # Webhook — оставьте WEBHOOK_HOST пустым для режима polling
 WEBHOOK_HOST: str = os.getenv("WEBHOOK_HOST", "")
-WEBHOOK_PATH: str = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_PATH: str = f"/webhook/tg-to-wp/{BOT_TOKEN}"
 WEBHOOK_URL: str = f"{WEBHOOK_HOST}{WEBHOOK_PATH}" if WEBHOOK_HOST else ""
 WEB_SERVER_HOST: str = os.getenv("WEB_SERVER_HOST", "0.0.0.0")
 WEB_SERVER_PORT: int = int(os.getenv("PORT", "8443"))
