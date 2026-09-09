@@ -12,10 +12,10 @@ from aiogram.types import (
     Message,
 )
 
-from config import botapi_extended_limits
-from middleware import AccessMiddleware, AlbumMiddleware
-from states import Post
-from utils import post_to_wp
+from .config import botapi_extended_limits
+from .middleware import AccessMiddleware, AlbumMiddleware
+from .states import Post
+from .utils import post_to_wp
 
 router = Router()
 router.message.outer_middleware(AccessMiddleware())

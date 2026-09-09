@@ -4,7 +4,7 @@ import re
 import httpx
 from cachetools import TTLCache
 
-from config import WP_URL, WP_USERNAME, WP_PASSWORD
+from .config import WP_URL, WP_USERNAME, WP_PASSWORD
 
 logger = logging.getLogger(__name__)
 

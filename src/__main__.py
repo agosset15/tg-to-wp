@@ -11,7 +11,7 @@ from aiogram.types import BotCommand
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
-from config import (
+from .config import (
     BOT_TOKEN,
     USE_WEBHOOK,
     WEBHOOK_PATH,

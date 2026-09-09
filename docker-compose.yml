@@ -1,6 +1,6 @@
 services:
   bot:
-    build: .
+    image: ghcr.io/agosset15/tg-to-wp:latest
     container_name: tg-to-wp-bot
     restart: unless-stopped
     env_file:

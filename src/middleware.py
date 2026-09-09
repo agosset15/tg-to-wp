@@ -4,7 +4,7 @@ from typing import Any, Callable, Awaitable
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
-from config import ALLOWED_USERS
+from .config import ALLOWED_USERS
 
 
 class AccessMiddleware(BaseMiddleware):
