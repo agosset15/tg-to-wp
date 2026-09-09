@@ -19,7 +19,7 @@ from .config import (
     WEB_SERVER_HOST,
     WEB_SERVER_PORT, PROXY_URL, BOTAPI_URL, BOTAPI_FILE_URL,
 )
-from handlers import router
+from .handlers import router
 
 logging.basicConfig(
     level=logging.INFO,
