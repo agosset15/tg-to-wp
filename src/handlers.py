@@ -1,8 +1,10 @@
 import html
 import logging
 import re
+from contextlib import suppress
 
 from aiogram import Router, F, Bot
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
@@ -42,12 +44,14 @@ HELP_TEXT = (
     "Пошаговый режим — команда /new.\n\n"
     "<b>Что умеет бот</b>\n"
     "• Форматирование Telegram (жирный, курсив, ссылки) переносится в WordPress\n"
+    "• Длинный текст в /new можно прислать частями — бот склеит их по порядку\n"
     "• <code>###</code> в тексте вставляет тег «Читать далее»\n"
     "• Первое фото становится обложкой, остальные — галереей\n"
     f"• Видео до {_LIMIT_LABEL} прикрепляются под текстом\n"
     "• Перед отправкой бот показывает предпросмотр\n\n"
     "<b>Команды</b>\n"
     "/new — создать пост по шагам\n"
+    "/done — завершить ввод текста, присланного частями\n"
     "/skip — пропустить необязательный шаг\n"
     "/cancel — отменить текущий пост\n"
     "/help — эта справка"
@@ -60,6 +64,17 @@ def _kb(*rows: list[InlineKeyboardButton]) -> InlineKeyboardMarkup:
 
 def _cancel_btn() -> InlineKeyboardButton:
     return InlineKeyboardButton(text="✖️ Отмена", callback_data="cancel")
+
+
+def _body_kb(has_parts: bool) -> InlineKeyboardMarkup:
+    rows = []
+    if has_parts:
+        rows.append([InlineKeyboardButton(text="✅ Готово", callback_data="body:done")])
+        rows.append(
+            [InlineKeyboardButton(text="↩️ Убрать последнюю", callback_data="body:undo")]
+        )
+    rows.append([_cancel_btn()])
+    return _kb(*rows)
 
 
 def _split_title_body(html_text: str) -> tuple[str, str]:
@@ -138,6 +153,73 @@ async def _collect_media(
 
     await state.update_data(media=media)
     return True
+
+
+async def _save_parts(state: FSMContext, parts: list[str]) -> None:
+    """Части тела храним списком — чтобы уметь убирать последнюю, а body
+    держим склеенным — его читают предпросмотр и отправка в WordPress."""
+    await state.update_data(parts=parts, body="\n\n".join(parts))
+
+
+async def _clear_status(chat_id: int, state: FSMContext, bot: Bot) -> None:
+    """Снимает клавиатуру со счётчика частей, чтобы кнопки не висели после шага."""
+    data = await state.get_data()
+    if status_id := data.get("status_id"):
+        with suppress(TelegramBadRequest):
+            await bot.edit_message_reply_markup(
+                chat_id=chat_id, message_id=status_id, reply_markup=None
+            )
+    await state.update_data(status_id=None)
+
+
+async def _body_status(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Счётчик собранного текста. Одно сообщение на весь шаг: каждая
+    новая часть его редактирует, а не засоряет чат."""
+    data = await state.get_data()
+    parts = data.get("parts") or []
+    chars = f"{len(_plain(data.get('body', ''))):,}".replace(",", "\u202f")
+    text = (
+        f"📝 Собрано частей: <b>{len(parts)}</b>, символов: <b>{chars}</b>.\n"
+        "Пришлите следующую часть или нажмите «Готово»."
+    )
+    kb = _body_kb(bool(parts))
+
+    if status_id := data.get("status_id"):
+        try:
+            await bot.edit_message_text(
+                text, chat_id=message.chat.id, message_id=status_id, reply_markup=kb
+            )
+            return
+        except TelegramBadRequest:
+            # старое сообщение удалили или оно слишком старое — пришлём новое
+            pass
+
+    sent = await message.answer(text, reply_markup=kb)
+    await state.update_data(status_id=sent.message_id)
+
+
+async def _ask_media(message: Message, state: FSMContext) -> None:
+    await message.answer(
+        "Шаг 3 из 3. Пришлите <b>фото или видео</b> — первое фото станет обложкой.\n"
+        "Альбом тоже подойдёт. Если медиа не нужно — /skip.",
+        reply_markup=_kb(
+            [InlineKeyboardButton(text="⏭ Без медиа", callback_data="media:skip")],
+            [_cancel_btn()],
+        ),
+    )
+    await state.set_state(Post.image)
+
+
+async def _finish_body(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Завершает шаг 2: текст собран, переходим к медиа."""
+    await _clear_status(message.chat.id, state, bot)
+    data = await state.get_data()
+    if not (data.get("parts") or []):
+        await message.answer(
+            "Текста пока нет. Пришлите хотя бы одну часть или отмените пост — /cancel."
+        )
+        return
+    await _ask_media(message, state)
 
 
 async def _show_preview(message: Message, state: FSMContext) -> None:
@@ -292,9 +374,11 @@ async def get_title(message: Message, state: FSMContext) -> None:
         await message.answer("Заголовок не может быть пустым. Введите его ещё раз:")
         return
 
-    await state.update_data(title=title, media=[])
+    await state.update_data(title=title, media=[], parts=[], status_id=None)
     await message.answer(
         "Шаг 2 из 3. Введите <b>текст поста</b> — форматирование Telegram сохранится.\n"
+        "Длинный текст присылайте частями — бот склеит их по порядку. "
+        "Когда закончите — кнопка «Готово» или /done.\n"
         f"Вставьте <code>{_MORE_MARKER}</code> там, где нужен тег «Читать далее».\n\n"
         "Можно сразу приложить фото или видео, а текст поместить в подпись.",
         reply_markup=_kb([_cancel_btn()]),
@@ -311,20 +395,41 @@ async def title_wrong_type(message: Message) -> None:
 # Шаг 2 — Текст поста
 # ---------------------------------------------------------------------------
 
-@router.message(Post.body, F.text & ~F.text.startswith("/"))
-async def get_body(message: Message, state: FSMContext) -> None:
-    raw = (message.html_text or message.text or "").replace(_MORE_MARKER, _MORE_TAG)
-    await state.update_data(body=raw)
+@router.message(Post.body, Command("done"))
+async def cmd_body_done(message: Message, state: FSMContext, bot: Bot) -> None:
+    await _finish_body(message, state, bot)
 
-    await message.answer(
-        "Шаг 3 из 3. Пришлите <b>фото или видео</b> — первое фото станет обложкой.\n"
-        "Альбом тоже подойдёт. Если медиа не нужно — /skip.",
-        reply_markup=_kb(
-            [InlineKeyboardButton(text="⏭ Без медиа", callback_data="media:skip")],
-            [_cancel_btn()],
-        ),
-    )
-    await state.set_state(Post.image)
+
+@router.message(Post.body, F.text & ~F.text.startswith("/"))
+async def get_body(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Каждое сообщение — очередная часть тела поста: в одно сообщение
+    Telegram не даст положить больше 4096 символов, а лонгрид длиннее."""
+    raw = (message.html_text or message.text or "").replace(_MORE_MARKER, _MORE_TAG)
+    data = await state.get_data()
+    parts = list(data.get("parts") or [])
+    parts.append(raw)
+    await _save_parts(state, parts)
+    await _body_status(message, state, bot)
+
+
+@router.callback_query(Post.body, F.data == "body:done")
+async def cb_body_done(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    await callback.answer()
+    await _finish_body(callback.message, state, bot)
+
+
+@router.callback_query(Post.body, F.data == "body:undo")
+async def cb_body_undo(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    data = await state.get_data()
+    parts = list(data.get("parts") or [])
+    if not parts:
+        await callback.answer("Убирать нечего")
+        return
+
+    parts.pop()
+    await _save_parts(state, parts)
+    await callback.answer("Последняя часть убрана")
+    await _body_status(callback.message, state, bot)
 
 
 @router.message(Post.body, F.photo | F.video)
@@ -334,12 +439,17 @@ async def get_body_with_media(
     bot: Bot,
     album: list[Message] | None = None,
 ) -> None:
-    """Текст поста прислали сразу с медиа/альбомом: подпись = тело поста,
-    медиа запоминаем, шаг Post.image пропускаем."""
+    """Текст поста прислали сразу с медиа/альбомом: подпись дописываем
+    к уже собранным частям, медиа запоминаем, шаг Post.image пропускаем."""
     # подпись Telegram прикрепляет к первому элементу группы (мин. message_id)
     src = min(album, key=lambda m: m.message_id) if album else message
     raw = (src.html_text or src.caption or "").replace(_MORE_MARKER, _MORE_TAG)
-    await state.update_data(body=raw)
+    data = await state.get_data()
+    parts = list(data.get("parts") or [])
+    if raw:
+        parts.append(raw)
+    await _save_parts(state, parts)
+    await _clear_status(message.chat.id, state, bot)
 
     if not await _collect_media(message, state, bot, album):
         await message.answer("Не удалось получить медиа. Попробуйте отправить ещё раз.")
@@ -351,7 +461,8 @@ async def get_body_with_media(
 @router.message(Post.body)
 async def body_wrong_type(message: Message) -> None:
     await message.answer(
-        "Жду текст поста — можно вместе с фото или видео. Выйти — /cancel."
+        "Жду текст поста — можно частями или вместе с фото/видео.\n"
+        "Закончить ввод — /done, выйти — /cancel."
     )
 
 

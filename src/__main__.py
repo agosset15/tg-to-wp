@@ -59,6 +59,7 @@ def _make_dispatcher() -> Dispatcher:
 
 BOT_COMMANDS = [
     BotCommand(command="new", description="Создать пост по шагам"),
+    BotCommand(command="done", description="Завершить ввод текста"),
     BotCommand(command="skip", description="Пропустить необязательный шаг"),
     BotCommand(command="cancel", description="Отменить текущий пост"),
     BotCommand(command="help", description="Справка"),
