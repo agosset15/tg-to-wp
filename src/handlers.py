@@ -36,6 +36,11 @@ _LIMIT_LABEL = "2 ГБ" if botapi_extended_limits else "20 МБ"
 
 _PREVIEW_LIMIT = 500
 
+# Альбом Telegram — не больше 10 файлов, поэтому медиа копим по альбомам.
+# Потолок на пост — чтобы не уйти в получасовую заливку и не просрочить
+# ссылки Telegram на файлы (они живут около часа).
+_MAX_MEDIA = 50
+
 HELP_TEXT = (
     "<b>Как опубликовать пост</b>\n\n"
     "Самый быстрый способ — просто пришлите сюда сообщение: "
@@ -47,6 +52,7 @@ HELP_TEXT = (
     "• Длинный текст в /new можно прислать частями — бот склеит их по порядку\n"
     "• <code>###</code> в тексте вставляет тег «Читать далее»\n"
     "• Первое фото становится обложкой, остальные — галереей\n"
+    f"• Фото больше 10 шт. — присылайте несколькими альбомами, бот их сложит (до {_MAX_MEDIA})\n"
     f"• Видео до {_LIMIT_LABEL} прикрепляются под текстом\n"
     "• Перед отправкой бот показывает предпросмотр\n\n"
     "<b>Команды</b>\n"
@@ -73,6 +79,19 @@ def _body_kb(has_parts: bool) -> InlineKeyboardMarkup:
         rows.append(
             [InlineKeyboardButton(text="↩️ Убрать последнюю", callback_data="body:undo")]
         )
+    rows.append([_cancel_btn()])
+    return _kb(*rows)
+
+
+def _media_kb(has_media: bool) -> InlineKeyboardMarkup:
+    rows = []
+    if has_media:
+        rows.append([InlineKeyboardButton(text="✅ Готово", callback_data="media:done")])
+        rows.append(
+            [InlineKeyboardButton(text="↩️ Убрать последнее", callback_data="media:undo")]
+        )
+    else:
+        rows.append([InlineKeyboardButton(text="⏭ Без медиа", callback_data="media:skip")])
     rows.append([_cancel_btn()])
     return _kb(*rows)
 
@@ -117,12 +136,20 @@ async def _collect_media(
     bot: Bot,
     album: list[Message] | None,
 ) -> bool:
-    """Собирает фото/видео из сообщения или альбома в data['media'].
+    """Добавляет фото/видео из сообщения или альбома к data['media'].
+    Не замещает уже собранное: альбом Telegram — максимум 10 файлов,
+    а посту бывает нужно больше, так что альбомы копим один за другим.
     Видео крупнее лимита Bot API на скачивание пропускает.
-    Возвращает False, если сохранять нечего."""
-    media: list[dict] = []
+    Возвращает False, если ничего не добавилось."""
+    data = await state.get_data()
+    media: list[dict] = list(data.get("media") or [])
+    was = len(media)
     skipped = 0
+    over_cap = 0
     for m in album or [message]:
+        if len(media) >= _MAX_MEDIA:
+            over_cap += 1
+            continue
         if m.photo:
             url = await _file_url(bot, m.photo[-1].file_id)
             media.append(
@@ -148,7 +175,11 @@ async def _collect_media(
             f"⚠️ Пропущено видео: {skipped} шт. больше {_LIMIT_LABEL} — "
             "Bot API не отдаёт такие файлы на скачивание."
         )
-    if not media:
+    if over_cap:
+        await message.answer(
+            f"⚠️ В посте уже {_MAX_MEDIA} файлов — лишние {over_cap} не добавил."
+        )
+    if len(media) == was:
         return False
 
     await state.update_data(media=media)
@@ -199,14 +230,15 @@ async def _body_status(message: Message, state: FSMContext, bot: Bot) -> None:
 
 
 async def _ask_media(message: Message, state: FSMContext) -> None:
-    await message.answer(
+    sent = await message.answer(
         "Шаг 3 из 3. Пришлите <b>фото или видео</b> — первое фото станет обложкой.\n"
-        "Альбом тоже подойдёт. Если медиа не нужно — /skip.",
-        reply_markup=_kb(
-            [InlineKeyboardButton(text="⏭ Без медиа", callback_data="media:skip")],
-            [_cancel_btn()],
-        ),
+        "В альбоме Telegram не больше 10 файлов — нужно больше, присылайте "
+        f"альбомы один за другим, бот сложит их вместе (до {_MAX_MEDIA} файлов).\n"
+        "Если медиа не нужно — /skip.",
+        reply_markup=_media_kb(False),
     )
+    # дальше это сообщение превратится в счётчик медиа — без лишних сообщений
+    await state.update_data(status_id=sent.message_id)
     await state.set_state(Post.image)
 
 
@@ -220,6 +252,37 @@ async def _finish_body(message: Message, state: FSMContext, bot: Bot) -> None:
         )
         return
     await _ask_media(message, state)
+
+
+async def _media_status(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Счётчик собранного медиа — одно сообщение на весь шаг, как и у текста."""
+    data = await state.get_data()
+    media = data.get("media") or []
+    text = (
+        f"🖼 В посте: <b>{_media_summary(media) if media else 'ничего'}</b>.\n"
+        "Пришлите ещё одним альбомом (в альбоме до 10 файлов) "
+        "или нажмите «Готово»."
+    )
+    kb = _media_kb(bool(media))
+
+    if status_id := data.get("status_id"):
+        try:
+            await bot.edit_message_text(
+                text, chat_id=message.chat.id, message_id=status_id, reply_markup=kb
+            )
+            return
+        except TelegramBadRequest:
+            # старое сообщение удалили или оно слишком старое — пришлём новое
+            pass
+
+    sent = await message.answer(text, reply_markup=kb)
+    await state.update_data(status_id=sent.message_id)
+
+
+async def _finish_media(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Завершает шаг 3: медиа собрано, показываем предпросмотр."""
+    await _clear_status(message.chat.id, state, bot)
+    await _show_preview(message, state)
 
 
 async def _show_preview(message: Message, state: FSMContext) -> None:
@@ -239,7 +302,7 @@ async def _show_preview(message: Message, state: FSMContext) -> None:
     lines.append("")
     lines.append(f"<i>Медиа: {_media_summary(media) if media else 'нет'}</i>")
 
-    await message.answer(
+    sent = await message.answer(
         "👀 <b>Предпросмотр</b>\n\n" + "\n".join(lines),
         reply_markup=_kb(
             [InlineKeyboardButton(text="✅ Опубликовать", callback_data="pub:now")],
@@ -247,6 +310,7 @@ async def _show_preview(message: Message, state: FSMContext) -> None:
             [_cancel_btn()],
         ),
     )
+    await state.update_data(preview_id=sent.message_id)
     await state.set_state(Post.confirm)
 
 
@@ -455,7 +519,8 @@ async def get_body_with_media(
         await message.answer("Не удалось получить медиа. Попробуйте отправить ещё раз.")
         return
 
-    await _show_preview(message, state)
+    await state.set_state(Post.image)
+    await _media_status(message, state, bot)
 
 
 @router.message(Post.body)
@@ -471,9 +536,8 @@ async def body_wrong_type(message: Message) -> None:
 # ---------------------------------------------------------------------------
 
 @router.message(Post.image, Command("skip"))
-async def skip_image(message: Message, state: FSMContext) -> None:
-    await state.update_data(media=[])
-    await _show_preview(message, state)
+async def skip_image(message: Message, state: FSMContext, bot: Bot) -> None:
+    await _finish_media(message, state, bot)
 
 
 @router.message(Post.image, F.photo | F.video)
@@ -483,19 +547,39 @@ async def get_image(
     bot: Bot,
     album: list[Message] | None = None,
 ) -> None:
+    """Каждый альбом — очередная порция медиа: в один альбом Telegram
+    не даст положить больше 10 файлов."""
     if not await _collect_media(message, state, bot, album):
         await message.answer("Не удалось получить медиа. Попробуйте отправить ещё раз.")
         return
 
-    await _show_preview(message, state)
+    await _media_status(message, state, bot)
+
+
+@router.callback_query(Post.image, F.data == "media:done")
+async def cb_media_done(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    await callback.answer()
+    await _finish_media(callback.message, state, bot)
+
+
+@router.callback_query(Post.image, F.data == "media:undo")
+async def cb_media_undo(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    data = await state.get_data()
+    media = list(data.get("media") or [])
+    if not media:
+        await callback.answer("Убирать нечего")
+        return
+
+    media.pop()
+    await state.update_data(media=media)
+    await callback.answer("Последний файл убран")
+    await _media_status(callback.message, state, bot)
 
 
 @router.callback_query(Post.image, F.data == "media:skip")
-async def cb_skip_image(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await state.update_data(media=[])
-    await _show_preview(callback.message, state)
+async def cb_skip_image(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     await callback.answer()
+    await _finish_media(callback.message, state, bot)
 
 
 @router.message(Post.image)
@@ -554,10 +638,35 @@ async def publish_draft(callback: CallbackQuery, state: FSMContext) -> None:
     await _submit(callback.message, state, publish=False)
 
 
+@router.message(Post.confirm, F.photo | F.video)
+async def confirm_add_media(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    album: list[Message] | None = None,
+) -> None:
+    """Альбом, присланный после предпросмотра, добавляется к посту —
+    так в быстром режиме снимается ограничение в 10 фото на пост."""
+    if not await _collect_media(message, state, bot, album):
+        await message.answer("Не удалось получить медиа. Попробуйте отправить ещё раз.")
+        return
+
+    # старый предпросмотр уже не актуален — снимаем с него кнопки
+    data = await state.get_data()
+    if preview_id := data.get("preview_id"):
+        with suppress(TelegramBadRequest):
+            await bot.edit_message_reply_markup(
+                chat_id=message.chat.id, message_id=preview_id, reply_markup=None
+            )
+
+    await _show_preview(message, state)
+
+
 @router.message(Post.confirm)
 async def confirm_wrong_input(message: Message) -> None:
     await message.answer(
-        "Выберите действие кнопками под предпросмотром или отправьте /cancel."
+        "Выберите действие кнопками под предпросмотром или отправьте /cancel.\n"
+        "Ещё фото или видео можно прислать прямо сейчас — добавлю к посту."
     )
 
 

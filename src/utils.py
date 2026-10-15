@@ -10,6 +10,10 @@ logger = logging.getLogger(__name__)
 
 _categories_cache: TTLCache = TTLCache(maxsize=1, ttl=3600)
 
+# Пост может нести десятки файлов (медиа копится из нескольких альбомов),
+# а лить их все сразу — верный таймаут на Telegram CDN или на стороне WP.
+_UPLOAD_CONCURRENCY = 4
+
 _HTTP_HINTS: dict[int, str] = {
     401: "WordPress не принял логин или пароль приложения (WP_USERNAME / WP_PASSWORD).",
     403: "У пользователя WordPress нет прав на публикацию.",
@@ -232,12 +236,15 @@ async def post_to_wp(data: dict, publish: bool = True) -> dict:
     featured_id: int | None = None
 
     if media:
-        uploads = await asyncio.gather(
-            *[
-                upload_media_to_wp(m["url"], m.get("filename", "file"), m.get("mime", ""))
-                for m in media
-            ]
-        )
+        sem = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
+
+        async def _upload(m: dict) -> dict | None:
+            async with sem:
+                return await upload_media_to_wp(
+                    m["url"], m.get("filename", "file"), m.get("mime", "")
+                )
+
+        uploads = await asyncio.gather(*[_upload(m) for m in media])
         pairs = [(m, up) for m, up in zip(media, uploads) if up is not None]
         if not pairs:
             raise RuntimeError("Не удалось загрузить ни одного файла")
